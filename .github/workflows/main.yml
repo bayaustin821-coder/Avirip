@@ -18,7 +18,7 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -39,21 +39,46 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
           STATUS=${PIPESTATUS[1]}
           set -e
-          if [ "$STATUS" -ne 0 ]; then exit "$STATUS"; fi
+          if [ "$STATUS" -ne 0 ]; then
+            exit "$STATUS"
+          fi
 
       - name: Install Android SDK packages
+        shell: bash
         run: |
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Verify project files
+      - name: Find Android Gradle project
+        id: project
+        shell: bash
         run: |
-          test -f settings.gradle || (echo "::error::settings.gradle is missing from repository root"; exit 1)
-          test -f build.gradle || (echo "::error::build.gradle is missing from repository root"; exit 1)
-          test -f app/build.gradle || (echo "::error::app/build.gradle is missing"; exit 1)
+          echo "Searching repository for settings.gradle..."
+          find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path '*/.gradle/*' -not -path '*/build/*' -print
+
+          PROJECT_DIR="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path '*/.gradle/*' -not -path '*/build/*' -printf '%h\\n' | head -n 1)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::No Gradle project was found. Upload the Android source files (including settings.gradle, build.gradle and app/) to this repository."
+            echo "Repository contents:"
+            find . -maxdepth 5 -type f -print | sort | head -250
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "::error::Found settings.gradle but app/build.gradle is missing from $PROJECT_DIR"
+            find "$PROJECT_DIR" -maxdepth 3 -type f -print | sort
+            exit 1
+          fi
+
+          echo "Found Android project at: $PROJECT_DIR"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Download Gradle 8.4
+        shell: bash
         run: |
           curl --fail --location --retry 3 \
             https://services.gradle.org/distributions/gradle-8.4-bin.zip \
@@ -61,14 +86,17 @@ jobs:
           unzip -q "$RUNNER_TEMP/gradle-8.4-bin.zip" -d "$RUNNER_TEMP"
 
       - name: Build debug APK
+        shell: bash
         run: |
           "$RUNNER_TEMP/gradle-8.4/bin/gradle" \
-            --no-daemon --stacktrace clean assembleDebug
+            --no-daemon --stacktrace \
+            -p "${{ steps.project.outputs.dir }}" \
+            clean assembleDebug
 
-      - name: Upload APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: VRCRip-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
