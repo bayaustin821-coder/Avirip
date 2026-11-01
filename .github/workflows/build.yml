@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -18,7 +19,7 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
-      - name: Check out repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -27,55 +28,54 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Use the already-installed command-line tools directly.
-      # Do not invoke setup-android: its script tries to install obsolete "tools".
-      - name: Accept licenses and install Android SDK packages
+      - name: Accept Android SDK licenses
         shell: bash
         run: |
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::Could not find sdkmanager under $ANDROID_HOME/cmdline-tools"
-            find "$ANDROID_HOME" -maxdepth 4 -type f | head -200
+            echo "::error::SDK manager not found"
             exit 1
           fi
-          echo "Using SDK manager: $SDKMANAGER"
+          set +e
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          STATUS=${PIPESTATUS[1]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            exit "$STATUS"
+          fi
+
+      - name: Install Android SDK
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      - name: Locate Android project
+      - name: Find Android project
         id: project
         shell: bash
         run: |
-          PROJECT_DIR="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -not -path '*/.gradle/*' -printf '%h\\n' | head -n 1)"
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::No settings.gradle or settings.gradle.kts found."
-            find . -maxdepth 5 -type f | sort | head -200
+          DIR="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.gradle/*' -printf '%h\n' | head -n 1)"
+          if [ -z "$DIR" ]; then
+            echo "::error::Gradle project not found"
             exit 1
           fi
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Found Gradle project: $PROJECT_DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
       - name: Download Gradle 8.4
-        shell: bash
         run: |
-          curl --fail --location --retry 3 \
-            https://services.gradle.org/distributions/gradle-8.4-bin.zip \
-            --output "$RUNNER_TEMP/gradle-8.4-bin.zip"
-          unzip -q "$RUNNER_TEMP/gradle-8.4-bin.zip" -d "$RUNNER_TEMP"
+          curl -L --fail https://services.gradle.org/distributions/gradle-8.4-bin.zip -o "$RUNNER_TEMP/gradle.zip"
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
 
-      - name: Build debug APK
-        shell: bash
+      - name: Build APK
         run: |
           "$RUNNER_TEMP/gradle-8.4/bin/gradle" \
             --no-daemon --stacktrace \
             -p "${{ steps.project.outputs.dir }}" \
             clean assembleDebug
 
-      - name: Upload debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: VRCRip-debug-apk
