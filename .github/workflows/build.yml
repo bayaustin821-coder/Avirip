@@ -14,6 +14,7 @@ jobs:
     name: Build Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -29,17 +30,25 @@ jobs:
           java-version: '17'
 
       - name: Extract Android project ZIP
+        shell: bash
         run: |
-          ZIP_FILE="VRCRip_complete_repository.zip"
-          if [ -f "$ZIP_FILE" ]; then
-            mkdir -p "$RUNNER_TEMP/vrcrip-source"
-            unzip -o "$ZIP_FILE" -d "$RUNNER_TEMP/vrcrip-source"
-            echo "SOURCE_ROOT=$RUNNER_TEMP/vrcrip-source" >> "$GITHUB_ENV"
-          else
-            echo "SOURCE_ROOT=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          set -e
+          mkdir -p "$RUNNER_TEMP/android-source"
+
+          FOUND=0
+
+          while IFS= read -r -d '' ZIP; do
+            echo "Extracting: $ZIP"
+            unzip -oq "$ZIP" -d "$RUNNER_TEMP/android-source"
+            FOUND=1
+          done < <(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*.zip' -print0)
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::error::No ZIP file found in repository root."
+            exit 1
           fi
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android licenses
         shell: bash
         run: |
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
@@ -59,20 +68,36 @@ jobs:
         id: project
         shell: bash
         run: |
-          PROJECT_DIR="$(find "$SOURCE_ROOT" -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.gradle/*' -not -path '*/build/*' -printf '%h\n' | head -n 1)"
+          mapfile -t PROJECTS < <(
+            find "$RUNNER_TEMP/android-source" -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path '*/.gradle/*' \
+              -not -path '*/build/*' \
+              -printf '%h\n'
+          )
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::Gradle project not found. Check that the ZIP is uploaded."
-            find "$SOURCE_ROOT" -maxdepth 5 -type f | head -200
+          if [ "${#PROJECTS[@]}" -eq 0 ]; then
+            echo "::error::No settings.gradle found inside extracted ZIP files."
+            find "$RUNNER_TEMP/android-source" -maxdepth 5 -type f
             exit 1
           fi
 
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Found project: $PROJECT_DIR"
+          PROJECT_DIR="${PROJECTS[0]}"
 
-      - name: Download Gradle
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "::error::Android app Gradle file missing."
+            exit 1
+          fi
+
+          echo "Found project: $PROJECT_DIR"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Download Gradle 8.4
         run: |
-          curl -L --fail https://services.gradle.org/distributions/gradle-8.4-bin.zip -o "$RUNNER_TEMP/gradle.zip"
+          curl -L --fail --retry 3 \
+            https://services.gradle.org/distributions/gradle-8.4-bin.zip \
+            -o "$RUNNER_TEMP/gradle.zip"
           unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
 
       - name: Build APK
