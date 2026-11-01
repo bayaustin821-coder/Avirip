@@ -1,0 +1,74 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::Android SDK manager not found"
+            exit 1
+          fi
+          set +e
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          STATUS=${PIPESTATUS[1]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then exit "$STATUS"; fi
+
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Verify project files
+        run: |
+          test -f settings.gradle || (echo "::error::settings.gradle is missing from repository root"; exit 1)
+          test -f build.gradle || (echo "::error::build.gradle is missing from repository root"; exit 1)
+          test -f app/build.gradle || (echo "::error::app/build.gradle is missing"; exit 1)
+
+      - name: Download Gradle 8.4
+        run: |
+          curl --fail --location --retry 3 \
+            https://services.gradle.org/distributions/gradle-8.4-bin.zip \
+            --output "$RUNNER_TEMP/gradle-8.4-bin.zip"
+          unzip -q "$RUNNER_TEMP/gradle-8.4-bin.zip" -d "$RUNNER_TEMP"
+
+      - name: Build debug APK
+        run: |
+          "$RUNNER_TEMP/gradle-8.4/bin/gradle" \
+            --no-daemon --stacktrace clean assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VRCRip-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
